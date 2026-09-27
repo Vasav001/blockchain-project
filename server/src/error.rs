@@ -19,6 +19,18 @@ pub enum AppError {
 
     #[error("internal error: mempool lock poisoned")]
     MempoolPoisoned,
+
+    #[error("no pending transactions to mine")]
+    NothingToMine,
+
+    #[error("internal error: chain has no blocks to mine on top of")]
+    ChainEmpty,
+
+    #[error("insufficient balance")]
+    InsufficientBalance,
+
+    #[error("duplicate transaction")]
+    DuplicateTransaction,
 }
 
 impl IntoResponse for AppError {
@@ -28,6 +40,10 @@ impl IntoResponse for AppError {
             AppError::BlockNotFound(_) => StatusCode::NOT_FOUND,
             AppError::InvalidTransaction(_) => StatusCode::BAD_REQUEST,
             AppError::MempoolPoisoned => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::NothingToMine => StatusCode::BAD_REQUEST,
+            AppError::ChainEmpty => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::InsufficientBalance => StatusCode::BAD_REQUEST,
+            AppError::DuplicateTransaction => StatusCode::BAD_REQUEST,
         };
 
         (status, Json(json!({ "error": self.to_string() }))).into_response()

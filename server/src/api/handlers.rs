@@ -2,7 +2,8 @@ use axum::extract::{Path, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::blockchain::{Block, Chain, Transaction};
+use crate::blockchain::{Block, Chain, RejectionReason, Transaction};
+use crate::config::MINING_DIFFICULTY;
 use crate::db;
 use crate::error::AppError;
 
@@ -57,9 +58,15 @@ pub struct TransactionRequest {
     pub signature: String,
 }
 
-/// POST /api/transactions - validates (including the signature) and queues
-/// a transaction, returning it (with its computed id) on success, or 400
-/// with a reason on failure.
+/// POST /api/transactions - validates (signature, structural rules, and
+/// now confirmed-balance affordability) and queues a transaction,
+/// returning it (with its computed id) on success, or 400 with a reason on
+/// failure.
+///
+/// `state.submission_lock` is held across loading the chain and admitting
+/// the transaction into the mempool, so two concurrent submissions from
+/// the same sender can't both pass an affordability check computed
+/// against the same pre-submission balance (see `AppState`'s doc comment).
 pub async fn submit_transaction(
     State(state): State<AppState>,
     Json(request): Json<TransactionRequest>,
@@ -72,12 +79,27 @@ pub async fn submit_transaction(
         request.signature,
     );
 
+    // Cheap structural/signature check first, before touching the lock or
+    // the database at all - `try_add_transaction` re-checks this too (it
+    // doesn't trust callers to have done it), but there's no reason to pay
+    // for a DB round trip on an obviously malformed request.
     if let Some(reason) = transaction.validation_error() {
         return Err(AppError::InvalidTransaction(reason));
     }
 
+    let _submission_guard = state.submission_lock.lock().await;
+
+    let blocks = db::load_all_blocks(&state.pool).await?;
+    let chain = Chain::from_blocks(blocks);
+
     let mut mempool = state.mempool.lock().map_err(|_| AppError::MempoolPoisoned)?;
-    mempool.add_transaction(transaction.clone());
+    mempool
+        .try_add_transaction(transaction.clone(), &chain)
+        .map_err(|reason| match reason {
+            RejectionReason::Invalid(message) => AppError::InvalidTransaction(message),
+            RejectionReason::InsufficientBalance => AppError::InsufficientBalance,
+            RejectionReason::Duplicate => AppError::DuplicateTransaction,
+        })?;
 
     Ok(Json(transaction))
 }
@@ -89,4 +111,63 @@ pub async fn pending_transactions(
 ) -> Result<Json<Vec<Transaction>>, AppError> {
     let mempool = state.mempool.lock().map_err(|_| AppError::MempoolPoisoned)?;
     Ok(Json(mempool.pending_transactions().to_vec()))
+}
+
+/// POST /api/mine - mines every currently pending transaction into a new
+/// block, persists it, and clears exactly those transactions from the
+/// mempool. Takes no body: no private key, no transaction payload - it
+/// only ever acts on what's already in the mempool.
+///
+/// `state.mining_lock` is held for the whole mine-then-persist-then-clear
+/// sequence, so two concurrent requests can't both mine the same pending
+/// transactions into two different blocks.
+pub async fn mine(State(state): State<AppState>) -> Result<Json<Block>, AppError> {
+    let _mining_guard = state.mining_lock.lock().await;
+
+    let pending: Vec<Transaction> = {
+        let mempool = state.mempool.lock().map_err(|_| AppError::MempoolPoisoned)?;
+        mempool.pending_transactions().to_vec()
+    };
+
+    if pending.is_empty() {
+        return Err(AppError::NothingToMine);
+    }
+
+    let previous = db::latest_block(&state.pool).await?.ok_or(AppError::ChainEmpty)?;
+
+    let mined = Block::mine(&previous, pending, MINING_DIFFICULTY);
+
+    // Only after this succeeds do we touch the mempool - if persistence
+    // fails, `?` returns early here and every pending transaction is still
+    // sitting in the mempool, untouched.
+    db::insert_block(&state.pool, &mined).await?;
+
+    {
+        let mut mempool = state.mempool.lock().map_err(|_| AppError::MempoolPoisoned)?;
+        mempool.remove_transactions(&mined.transactions);
+    }
+
+    Ok(Json(mined))
+}
+
+#[derive(Serialize)]
+pub struct BalanceResponse {
+    address: String,
+    balance: i64,
+}
+
+/// GET /api/wallets/{address}/balance - `address`'s confirmed balance,
+/// replayed from the persisted chain only. A pending-but-unmined
+/// transaction never affects this; an address that's never appeared in a
+/// confirmed transaction reports a balance of `0`, not a 404 - any string
+/// is a syntactically valid address here, there's nothing to "not find".
+pub async fn wallet_balance(
+    State(state): State<AppState>,
+    Path(address): Path<String>,
+) -> Result<Json<BalanceResponse>, AppError> {
+    let blocks = db::load_all_blocks(&state.pool).await?;
+    let chain = Chain::from_blocks(blocks);
+    let balance = chain.balance_of(&address);
+
+    Ok(Json(BalanceResponse { address, balance }))
 }

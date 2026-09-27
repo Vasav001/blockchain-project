@@ -45,8 +45,12 @@ The database location can be overridden with the `DATABASE_URL` environment vari
 ## Status
 
 Implemented so far: genesis block + SHA-256 hashing, chain validation/tamper detection,
-SQLite persistence, a read-only REST API, transactions with an in-memory mempool, and
+SQLite persistence, a read-only REST API, transactions with an in-memory mempool,
 Ed25519 wallets/signatures (transactions are signed client-side and verified server-side;
-the server never generates, stores, or returns a private key).
+the server never generates, stores, or returns a private key), Proof-of-Work mining
+(`POST /api/mine`) with a configurable difficulty (leading hex-zero characters), and
+account-based wallet balances (`GET /api/wallets/{address}/balance`) derived by replaying
+confirmed transactions - no coinbase/reward or genesis allocation yet, so a wallet can
+only ever spend what it's actually received.
 
-Not yet implemented: wallet balances, Proof-of-Work/mining, P2P, and the explorer UI.
+Not yet implemented: mining rewards, difficulty adjustment, P2P, and the explorer UI.

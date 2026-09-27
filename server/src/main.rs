@@ -2,6 +2,7 @@ use axum::{routing::get, Router};
 
 mod api;
 mod blockchain;
+mod config;
 mod db;
 mod error;
 mod wallet;

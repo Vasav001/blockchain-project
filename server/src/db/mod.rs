@@ -5,7 +5,7 @@ use std::str::FromStr;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 
-pub use block_repository::{find_block, has_blocks, insert_block, load_all_blocks};
+pub use block_repository::{find_block, has_blocks, insert_block, latest_block, load_all_blocks};
 
 /// Each migration's fixed version number, name, and SQL, embedded into the
 /// binary at compile time so the app doesn't depend on a filesystem path.
@@ -29,6 +29,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         4,
         "add_signature_to_block_transactions",
         include_str!("../../migrations/0004_add_signature_to_block_transactions.sql"),
+    ),
+    (
+        5,
+        "add_nonce_to_blocks",
+        include_str!("../../migrations/0005_add_nonce_to_blocks.sql"),
     ),
 ];
 
@@ -121,6 +126,7 @@ pub(crate) async fn test_pool() -> SqlitePool {
 mod tests {
     use super::*;
 
+
     #[tokio::test]
     async fn migrations_apply_cleanly_to_a_fresh_database() {
         let pool = test_pool().await;
@@ -130,7 +136,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(applied, vec![1, 2, 3, 4]);
+        assert_eq!(applied, vec![1, 2, 3, 4, 5]);
     }
 
     #[tokio::test]
@@ -191,7 +197,7 @@ mod tests {
             .fetch_all(&pool)
             .await
             .unwrap();
-        assert_eq!(applied, vec![1, 2, 3, 4]);
+        assert_eq!(applied, vec![1, 2, 3, 4, 5]);
 
         // The pre-existing row should have picked up the new columns with
         // the migrations' declared defaults, not been dropped or corrupted.
@@ -205,5 +211,77 @@ mod tests {
 
         assert_eq!(sender_public_key, "");
         assert_eq!(signature, "");
+    }
+
+    #[tokio::test]
+    async fn migrations_upgrade_an_existing_phase_7_database() {
+        // Simulate a database left behind by the Phase 7 version of this
+        // app: migrations 1-4 applied (full transaction/signature schema),
+        // but no `nonce` column on `blocks` yet, and it already holds a
+        // genesis row written before that column existed.
+        //
+        // Decision (Phase 8): old, non-mined blocks are simply read back
+        // with `nonce = 0` via this column's `DEFAULT 0` - the same
+        // approach already used for `sender_public_key`/`signature` in
+        // Phase 7. This does *not* retroactively make an old block's
+        // stored hash "correct" under the new nonce-including hash
+        // formula (see `Block::calculate_hash`); in practice the only
+        // block ever persisted before mining existed is genesis, and a
+        // fresh `data/blockchain.db` (gitignored, disposable dev state)
+        // is the practical remedy if `/api/chain/valid` ever reports an
+        // old database as invalid after this upgrade.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for (version, name, sql) in MIGRATIONS.iter().copied().take(4) {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO schema_migrations (version, name) VALUES (?, ?)")
+                .bind(version)
+                .bind(name)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        sqlx::query(
+            "INSERT INTO blocks (block_index, timestamp, data, previous_hash, hash)
+             VALUES (0, 0, 'genesis block', ?, 'somehash')",
+        )
+        .bind("0".repeat(64))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        run_migrations(&pool).await.unwrap();
+
+        let applied: Vec<i64> = sqlx::query_scalar("SELECT version FROM schema_migrations ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(applied, vec![1, 2, 3, 4, 5]);
+
+        let nonce: i64 = sqlx::query_scalar("SELECT nonce FROM blocks WHERE block_index = 0")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(nonce, 0);
+
+        // The pre-existing block is still readable through the repository
+        // layer, not just raw SQL.
+        let loaded = crate::db::find_block(&pool, 0).await.unwrap().unwrap();
+        assert_eq!(loaded.nonce, 0);
     }
 }

@@ -11,6 +11,7 @@ struct BlockRow {
     data: String,
     previous_hash: String,
     hash: String,
+    nonce: i64,
 }
 
 impl sqlx::FromRow<'_, SqliteRow> for BlockRow {
@@ -21,6 +22,7 @@ impl sqlx::FromRow<'_, SqliteRow> for BlockRow {
             data: row.try_get("data")?,
             previous_hash: row.try_get("previous_hash")?,
             hash: row.try_get("hash")?,
+            nonce: row.try_get("nonce")?,
         })
     }
 }
@@ -73,12 +75,14 @@ impl From<TransactionRow> for Transaction {
 fn assemble_block(row: BlockRow, transactions: Vec<Transaction>) -> Block {
     Block {
         // SQLite's INTEGER is signed 64-bit; this app never produces a
-        // negative index or timestamp, so the cast back to u64 is safe.
+        // negative index, timestamp, or nonce, so the cast back to u64 is
+        // safe.
         index: row.block_index as u64,
         timestamp: row.timestamp as u64,
         data: row.data,
         previous_hash: row.previous_hash,
         transactions,
+        nonce: row.nonce as u64,
         hash: row.hash,
     }
 }
@@ -109,14 +113,15 @@ pub async fn insert_block(pool: &SqlitePool, block: &Block) -> Result<(), sqlx::
     let mut tx = pool.begin().await?;
 
     sqlx::query(
-        "INSERT INTO blocks (block_index, timestamp, data, previous_hash, hash)
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO blocks (block_index, timestamp, data, previous_hash, hash, nonce)
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(block.index as i64)
     .bind(block.timestamp as i64)
     .bind(&block.data)
     .bind(&block.previous_hash)
     .bind(&block.hash)
+    .bind(block.nonce as i64)
     .execute(&mut *tx)
     .await?;
 
@@ -144,6 +149,8 @@ pub async fn insert_block(pool: &SqlitePool, block: &Block) -> Result<(), sqlx::
     Ok(())
 }
 
+const BLOCK_COLUMNS: &str = "block_index, timestamp, data, previous_hash, hash, nonce";
+
 /// Loads every stored block with its transactions, ordered by index (i.e.
 /// chain order).
 ///
@@ -152,11 +159,9 @@ pub async fn insert_block(pool: &SqlitePool, block: &Block) -> Result<(), sqlx::
 /// query would be the next step if block counts ever got large enough for
 /// N+1 queries to matter.
 pub async fn load_all_blocks(pool: &SqlitePool) -> Result<Vec<Block>, sqlx::Error> {
-    let rows: Vec<BlockRow> = sqlx::query_as(
-        "SELECT block_index, timestamp, data, previous_hash, hash
-         FROM blocks
-         ORDER BY block_index ASC",
-    )
+    let rows: Vec<BlockRow> = sqlx::query_as(&format!(
+        "SELECT {BLOCK_COLUMNS} FROM blocks ORDER BY block_index ASC"
+    ))
     .fetch_all(pool)
     .await?;
 
@@ -182,11 +187,9 @@ pub async fn has_blocks(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
 /// Loads a single block, with its transactions, by its index - if one
 /// exists.
 pub async fn find_block(pool: &SqlitePool, index: u64) -> Result<Option<Block>, sqlx::Error> {
-    let row: Option<BlockRow> = sqlx::query_as(
-        "SELECT block_index, timestamp, data, previous_hash, hash
-         FROM blocks
-         WHERE block_index = ?",
-    )
+    let row: Option<BlockRow> = sqlx::query_as(&format!(
+        "SELECT {BLOCK_COLUMNS} FROM blocks WHERE block_index = ?"
+    ))
     .bind(index as i64)
     .fetch_optional(pool)
     .await?;
@@ -200,10 +203,31 @@ pub async fn find_block(pool: &SqlitePool, index: u64) -> Result<Option<Block>, 
     Ok(Some(assemble_block(row, transactions)))
 }
 
+/// Loads the highest-index block, with its transactions - the block
+/// mining builds on top of. Returns `None` only if the `blocks` table is
+/// empty, which shouldn't happen in practice since genesis is always
+/// seeded at startup.
+pub async fn latest_block(pool: &SqlitePool) -> Result<Option<Block>, sqlx::Error> {
+    let row: Option<BlockRow> = sqlx::query_as(&format!(
+        "SELECT {BLOCK_COLUMNS} FROM blocks ORDER BY block_index DESC LIMIT 1"
+    ))
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    let transactions = load_transactions(pool, row.block_index as u64).await?;
+
+    Ok(Some(assemble_block(row, transactions)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::blockchain::Chain;
+    use crate::config::MINING_DIFFICULTY;
     use crate::db::test_pool;
     use crate::wallet::Wallet;
 
@@ -273,10 +297,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loaded_chain_passes_validation() {
+    async fn latest_block_returns_the_highest_index_block() {
         let pool = test_pool().await;
         let mut chain = Chain::new();
         chain.add_block("first".to_string());
+        chain.add_block("second".to_string());
+
+        for block in &chain.blocks {
+            insert_block(&pool, block).await.unwrap();
+        }
+
+        let latest = latest_block(&pool).await.unwrap().unwrap();
+
+        assert_eq!(latest.index, 2);
+    }
+
+    #[tokio::test]
+    async fn loaded_chain_passes_validation() {
+        let pool = test_pool().await;
+        let mut chain = Chain::new();
+        let mined = Block::mine(&chain.blocks[0], Vec::new(), MINING_DIFFICULTY);
+        chain.blocks.push(mined);
 
         for block in &chain.blocks {
             insert_block(&pool, block).await.unwrap();
@@ -294,6 +335,7 @@ mod tests {
             "block with transactions".to_string(),
             previous.hash.clone(),
             transactions,
+            0,
         )
     }
 
@@ -370,22 +412,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chain_with_signed_transactions_is_valid_after_loading() {
-        let pool = test_pool().await;
-        let genesis = Block::genesis();
-        let wallet = Wallet::generate();
-        let tx = Transaction::signed_by(&wallet, "bob".to_string(), 10);
-        let block = block_with_transactions(&genesis, vec![tx]);
-
-        insert_block(&pool, &genesis).await.unwrap();
-        insert_block(&pool, &block).await.unwrap();
-
-        let loaded = Chain::from_blocks(load_all_blocks(&pool).await.unwrap());
-
-        assert!(loaded.is_valid());
-    }
-
-    #[tokio::test]
     async fn loaded_transaction_with_tampered_signature_is_still_rejected() {
         let pool = test_pool().await;
         let genesis = Block::genesis();
@@ -408,5 +434,62 @@ mod tests {
         // independently catches it after a full round trip.
         assert!(loaded.hash_matches());
         assert!(!loaded.transactions[0].is_valid());
+    }
+
+    #[tokio::test]
+    async fn mined_block_survives_database_round_trip() {
+        let pool = test_pool().await;
+        let genesis = Block::genesis();
+        let wallet = Wallet::generate();
+        let tx = Transaction::signed_by(&wallet, "bob".to_string(), 10);
+        let mined = Block::mine(&genesis, vec![tx], MINING_DIFFICULTY);
+
+        insert_block(&pool, &genesis).await.unwrap();
+        insert_block(&pool, &mined).await.unwrap();
+
+        let loaded = find_block(&pool, mined.index).await.unwrap().unwrap();
+
+        assert_eq!(loaded, mined);
+        assert!(loaded.satisfies_difficulty(MINING_DIFFICULTY));
+    }
+
+    #[tokio::test]
+    async fn loaded_mined_chain_passes_is_valid() {
+        let pool = test_pool().await;
+        let genesis = Block::genesis();
+        let wallet = Wallet::generate();
+        let tx = Transaction::signed_by(&wallet, "bob".to_string(), 10);
+        let mined = Block::mine(&genesis, vec![tx], MINING_DIFFICULTY);
+
+        insert_block(&pool, &genesis).await.unwrap();
+        insert_block(&pool, &mined).await.unwrap();
+
+        let loaded = Chain::from_blocks(load_all_blocks(&pool).await.unwrap());
+
+        assert!(loaded.is_valid());
+    }
+
+    #[tokio::test]
+    async fn loaded_chain_produces_the_same_balances_as_the_original() {
+        let pool = test_pool().await;
+        let genesis = Block::genesis();
+        let faucet = Wallet::generate();
+        let alice = Wallet::generate();
+        let bob = Wallet::generate();
+
+        let funded = Block::mine(&genesis, vec![Transaction::signed_by(&faucet, alice.address(), 100)], MINING_DIFFICULTY);
+        let spent = Block::mine(&funded, vec![Transaction::signed_by(&alice, bob.address(), 30)], MINING_DIFFICULTY);
+
+        let original = Chain::from_blocks(vec![genesis, funded, spent]);
+        for block in &original.blocks {
+            insert_block(&pool, block).await.unwrap();
+        }
+
+        let loaded = Chain::from_blocks(load_all_blocks(&pool).await.unwrap());
+
+        assert_eq!(loaded.balance_of(&alice.address()), original.balance_of(&alice.address()));
+        assert_eq!(loaded.balance_of(&bob.address()), original.balance_of(&bob.address()));
+        assert_eq!(loaded.balance_of(&alice.address()), 70);
+        assert_eq!(loaded.balance_of(&bob.address()), 30);
     }
 }

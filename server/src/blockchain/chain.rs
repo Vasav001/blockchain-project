@@ -1,6 +1,5 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use super::Block;
+use super::{current_timestamp, Block};
+use crate::config::MINING_DIFFICULTY;
 
 /// An ordered, append-only list of blocks starting from the genesis block.
 #[derive(Debug)]
@@ -21,13 +20,16 @@ impl Chain {
         }
     }
 
-    /// Appends a new block carrying `data`, linked to the current last block.
+    /// Appends a new block carrying `data`, linked to the current last
+    /// block, with `nonce = 0` (i.e. no mining/Proof-of-Work).
     ///
     /// The index and previous-hash are derived from the current last block,
     /// so there's exactly one place (`Block::new`) that builds a `Block`.
     ///
-    /// Not yet called from `main` - appending blocks starts with mining in
-    /// a later phase.
+    /// Not called from `main` - real blocks are only ever produced by
+    /// `Block::mine`. This stays around for tests that only care about
+    /// index/previous-hash linkage, not full chain validity (an unmined
+    /// block will essentially never satisfy `MINING_DIFFICULTY`).
     #[allow(dead_code)]
     pub fn add_block(&mut self, data: String) {
         let previous = self
@@ -41,6 +43,7 @@ impl Chain {
             data,
             previous.hash.clone(),
             Vec::new(),
+            0,
         );
         self.blocks.push(block);
     }
@@ -54,8 +57,10 @@ impl Chain {
 
     /// Verifies the whole chain: every block's stored hash must match its
     /// recomputed hash, indexes must be sequential from zero, each block's
-    /// `previous_hash` must match its predecessor's `hash`, and the first
-    /// block must be exactly the expected genesis block.
+    /// `previous_hash` must match its predecessor's `hash`, the first block
+    /// must be exactly the expected genesis block, and every block after
+    /// genesis must satisfy the configured mining difficulty (genesis is
+    /// exempt - it's a fixed, deterministic special case, never mined).
     pub fn is_valid(&self) -> bool {
         for (i, block) in self.blocks.iter().enumerate() {
             if !block.hash_matches() {
@@ -73,23 +78,63 @@ impl Chain {
             if block.index != previous.index + 1 || block.previous_hash != previous.hash {
                 return false;
             }
+
+            if !block.satisfies_difficulty(MINING_DIFFICULTY) {
+                return false;
+            }
         }
 
         true
     }
-}
 
-#[allow(dead_code)]
-fn current_timestamp() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time is before UNIX_EPOCH")
-        .as_secs()
+    /// `address`'s confirmed balance: replays every transaction in every
+    /// block, in order - each one decreases the sender's running total by
+    /// `amount` and increases the recipient's by `amount`. A wallet that's
+    /// never appeared in a confirmed transaction has balance `0`.
+    ///
+    /// There's no mining reward and no genesis allocation in this phase
+    /// (explicitly out of scope - see the project's phase history), so
+    /// every wallet starts at zero and can only ever have what it's
+    /// received. This is a pure replay with no validation of its own: it
+    /// doesn't re-check signatures or re-enforce "sender must have had
+    /// enough balance at the time" - that's `Mempool::try_add_transaction`'s
+    /// job, applied once, when a transaction is first admitted. Balance
+    /// isn't part of `is_valid()` either, by the same reasoning `Chain`
+    /// already applies to transaction signatures (see `is_valid`'s doc
+    /// comment in earlier phases): confirmed chain integrity (hashes,
+    /// links, PoW) and economic admission policy are different concerns.
+    pub fn balance_of(&self, address: &str) -> i64 {
+        let mut balance: i64 = 0;
+
+        for block in &self.blocks {
+            for transaction in &block.transactions {
+                if transaction.sender == address {
+                    balance -= transaction.amount;
+                }
+                if transaction.recipient == address {
+                    balance += transaction.amount;
+                }
+            }
+        }
+
+        balance
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blockchain::Transaction;
+    use crate::wallet::Wallet;
+
+    /// Mines a real block on top of `chain`'s current last block and
+    /// appends it - the test equivalent of `add_block`, but one that
+    /// actually satisfies Proof-of-Work, for tests that need `is_valid()`
+    /// to be true.
+    fn mine_next_block(chain: &mut Chain, transactions: Vec<Transaction>) {
+        let mined = Block::mine(chain.blocks.last().unwrap(), transactions, MINING_DIFFICULTY);
+        chain.blocks.push(mined);
+    }
 
     #[test]
     fn new_chain_contains_exactly_one_genesis_block() {
@@ -102,7 +147,7 @@ mod tests {
     #[test]
     fn from_blocks_rebuilds_a_valid_chain() {
         let mut original = Chain::new();
-        original.add_block("first".to_string());
+        mine_next_block(&mut original, Vec::new());
 
         let rebuilt = Chain::from_blocks(original.blocks);
 
@@ -141,18 +186,29 @@ mod tests {
     }
 
     #[test]
-    fn a_valid_chain_passes_is_valid() {
+    fn a_mined_chain_passes_is_valid() {
         let mut chain = Chain::new();
-        chain.add_block("first".to_string());
-        chain.add_block("second".to_string());
+        mine_next_block(&mut chain, Vec::new());
+        mine_next_block(&mut chain, Vec::new());
 
         assert!(chain.is_valid());
     }
 
     #[test]
+    fn an_unmined_block_fails_proof_of_work_validation() {
+        let mut chain = Chain::new();
+        // `add_block` sets nonce = 0 and never searches for a satisfying
+        // hash - vanishingly unlikely to meet the real difficulty.
+        chain.add_block("first".to_string());
+
+        assert!(!chain.is_valid());
+    }
+
+    #[test]
     fn modifying_block_data_makes_the_chain_invalid() {
         let mut chain = Chain::new();
-        chain.add_block("first".to_string());
+        mine_next_block(&mut chain, Vec::new());
+        assert!(chain.is_valid());
 
         chain.blocks[1].data = "tampered".to_string();
 
@@ -162,7 +218,8 @@ mod tests {
     #[test]
     fn modifying_a_stored_block_hash_makes_the_chain_invalid() {
         let mut chain = Chain::new();
-        chain.add_block("first".to_string());
+        mine_next_block(&mut chain, Vec::new());
+        assert!(chain.is_valid());
 
         chain.blocks[1].hash = "0".repeat(64);
 
@@ -172,8 +229,9 @@ mod tests {
     #[test]
     fn modifying_previous_hash_makes_the_chain_invalid() {
         let mut chain = Chain::new();
-        chain.add_block("first".to_string());
-        chain.add_block("second".to_string());
+        mine_next_block(&mut chain, Vec::new());
+        mine_next_block(&mut chain, Vec::new());
+        assert!(chain.is_valid());
 
         chain.blocks[2].previous_hash = "1".repeat(64);
 
@@ -183,10 +241,90 @@ mod tests {
     #[test]
     fn modifying_a_block_index_makes_the_chain_invalid() {
         let mut chain = Chain::new();
-        chain.add_block("first".to_string());
+        mine_next_block(&mut chain, Vec::new());
+        assert!(chain.is_valid());
 
         chain.blocks[1].index = 5;
 
         assert!(!chain.is_valid());
+    }
+
+    #[test]
+    fn mined_chain_with_signed_transactions_is_valid() {
+        let wallet = Wallet::generate();
+        let tx = Transaction::signed_by(&wallet, "bob".to_string(), 10);
+
+        let mut chain = Chain::new();
+        mine_next_block(&mut chain, vec![tx]);
+
+        assert!(chain.is_valid());
+    }
+
+    #[test]
+    fn empty_chain_gives_every_address_zero_balance() {
+        let chain = Chain::new();
+
+        assert_eq!(chain.balance_of("anyone"), 0);
+    }
+
+    #[test]
+    fn receiving_a_transaction_increases_balance() {
+        let faucet = Wallet::generate();
+        let alice = Wallet::generate();
+        let credit = Transaction::signed_by(&faucet, alice.address(), 100);
+
+        let mut chain = Chain::new();
+        mine_next_block(&mut chain, vec![credit]);
+
+        assert_eq!(chain.balance_of(&alice.address()), 100);
+    }
+
+    #[test]
+    fn sending_a_transaction_decreases_balance() {
+        let faucet = Wallet::generate();
+        let alice = Wallet::generate();
+        let bob = Wallet::generate();
+
+        let mut chain = Chain::new();
+        mine_next_block(&mut chain, vec![Transaction::signed_by(&faucet, alice.address(), 100)]);
+        mine_next_block(&mut chain, vec![Transaction::signed_by(&alice, bob.address(), 30)]);
+
+        assert_eq!(chain.balance_of(&alice.address()), 70);
+        assert_eq!(chain.balance_of(&bob.address()), 30);
+    }
+
+    #[test]
+    fn multiple_transactions_are_replayed_in_order() {
+        let faucet = Wallet::generate();
+        let alice = Wallet::generate();
+        let bob = Wallet::generate();
+
+        let mut chain = Chain::new();
+        mine_next_block(&mut chain, vec![Transaction::signed_by(&faucet, alice.address(), 100)]);
+        mine_next_block(
+            &mut chain,
+            vec![
+                Transaction::signed_by(&alice, bob.address(), 20),
+                Transaction::signed_by(&alice, bob.address(), 15),
+            ],
+        );
+        mine_next_block(&mut chain, vec![Transaction::signed_by(&bob, alice.address(), 5)]);
+
+        assert_eq!(chain.balance_of(&alice.address()), 100 - 20 - 15 + 5);
+        assert_eq!(chain.balance_of(&bob.address()), 20 + 15 - 5);
+    }
+
+    #[test]
+    fn different_wallets_have_independent_balances() {
+        let faucet = Wallet::generate();
+        let alice = Wallet::generate();
+        let bob = Wallet::generate();
+
+        let mut chain = Chain::new();
+        mine_next_block(&mut chain, vec![Transaction::signed_by(&faucet, alice.address(), 40)]);
+        mine_next_block(&mut chain, vec![Transaction::signed_by(&faucet, bob.address(), 15)]);
+
+        assert_eq!(chain.balance_of(&alice.address()), 40);
+        assert_eq!(chain.balance_of(&bob.address()), 15);
     }
 }
