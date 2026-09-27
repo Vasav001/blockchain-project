@@ -1,121 +1,116 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
+import { useCallback, useEffect, useState } from 'react'
 import './App.css'
+import { ApiRequestError, getBlocks, getChainValidity, getPendingTransactions } from './api'
+import { generateWallet } from './wallet'
+import type { WalletKeys } from './wallet'
+import type { Block, Transaction } from './types'
+import { BlockchainStatus } from './components/BlockchainStatus'
+import { MempoolPanel } from './components/MempoolPanel'
+import { BalanceLookup } from './components/BalanceLookup'
+import { TransactionForm } from './components/TransactionForm'
+import { MiningPanel } from './components/MiningPanel'
+import { Explorer } from './components/Explorer'
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [blocks, setBlocks] = useState<Block[] | null>(null)
+  const [chainValid, setChainValid] = useState<boolean | null>(null)
+  const [chainLoading, setChainLoading] = useState(false)
+  const [chainError, setChainError] = useState<string | null>(null)
+
+  const [pending, setPending] = useState<Transaction[] | null>(null)
+  const [pendingLoading, setPendingLoading] = useState(false)
+  const [pendingError, setPendingError] = useState<string | null>(null)
+
+  const [wallet, setWallet] = useState<WalletKeys | null>(null)
+  const [generatingWallet, setGeneratingWallet] = useState(false)
+
+  const refreshChain = useCallback(async () => {
+    setChainLoading(true)
+    setChainError(null)
+    try {
+      const [blockList, validity] = await Promise.all([getBlocks(), getChainValidity()])
+      setBlocks(blockList)
+      setChainValid(validity.valid)
+    } catch (err) {
+      setChainError(err instanceof ApiRequestError ? err.message : 'Failed to load the chain.')
+    } finally {
+      setChainLoading(false)
+    }
+  }, [])
+
+  const refreshPending = useCallback(async () => {
+    setPendingLoading(true)
+    setPendingError(null)
+    try {
+      setPending(await getPendingTransactions())
+    } catch (err) {
+      setPendingError(
+        err instanceof ApiRequestError ? err.message : 'Failed to load pending transactions.',
+      )
+    } finally {
+      setPendingLoading(false)
+    }
+  }, [])
+
+  // One-time load on mount - no polling, per this phase's scope. Everything
+  // after this refreshes only in response to an explicit user action
+  // (Refresh buttons) or a successful mutation (submit/mine).
+  useEffect(() => {
+    void refreshChain()
+    void refreshPending()
+  }, [refreshChain, refreshPending])
+
+  async function handleGenerateWallet() {
+    setGeneratingWallet(true)
+    try {
+      setWallet(await generateWallet())
+    } finally {
+      setGeneratingWallet(false)
+    }
+  }
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <div className="app">
+      <header className="app-header">
+        <h1>Blockchain Explorer</h1>
+        <p>A lightweight, from-scratch blockchain - Rust backend, signed by this browser.</p>
+      </header>
 
-      <div className="ticks"></div>
+      <main className="dashboard">
+        <BlockchainStatus
+          blocks={blocks}
+          valid={chainValid}
+          loading={chainLoading}
+          error={chainError}
+          onRefresh={() => void refreshChain()}
+        />
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+        <MempoolPanel
+          pending={pending}
+          loading={pendingLoading}
+          error={pendingError}
+          onRefresh={() => void refreshPending()}
+        />
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+        <BalanceLookup prefillAddress={wallet?.address} />
+
+        <TransactionForm
+          wallet={wallet}
+          generatingWallet={generatingWallet}
+          onGenerateWallet={() => void handleGenerateWallet()}
+          onSubmitted={() => void refreshPending()}
+        />
+
+        <MiningPanel
+          onMined={() => {
+            void refreshChain()
+            void refreshPending()
+          }}
+        />
+
+        <Explorer blocks={blocks} loading={chainLoading} error={chainError} />
+      </main>
+    </div>
   )
 }
 

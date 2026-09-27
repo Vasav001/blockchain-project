@@ -51,6 +51,9 @@ the server never generates, stores, or returns a private key), Proof-of-Work min
 (`POST /api/mine`) with a configurable difficulty (leading hex-zero characters), and
 account-based wallet balances (`GET /api/wallets/{address}/balance`) derived by replaying
 confirmed transactions - no coinbase/reward or genesis allocation yet, so a wallet can
-only ever spend what it's actually received.
+only ever spend what it's actually received - and a React/TypeScript dashboard (explorer,
+mempool view, balance lookup, transaction submission, mining) with real client-side
+Ed25519 signing via `@noble/ed25519` (`client/src/wallet.ts`); private keys never leave
+the browser tab's memory.
 
-Not yet implemented: mining rewards, difficulty adjustment, P2P, and the explorer UI.
+Not yet implemented: mining rewards, difficulty adjustment, and P2P.
