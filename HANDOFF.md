@@ -41,15 +41,15 @@ keys never leave the browser tab.
 - No mining rewards / coinbase transactions
 - No difficulty adjustment (fixed constant)
 - No WebSockets (request/response only, manual refresh after mutations)
-- A development-only funding mechanism (direct backend-side block insertion) is used
-  for test/demo setup, since there's no coinbase/faucet - documented, not an API
-  endpoint
+- A development-only funding endpoint (`POST /api/dev/fund`, gated behind
+  `DEV_FUNDING_ENABLED=true`, otherwise not registered/404) exists for test/demo
+  setup, since there's no coinbase/faucet - see `docs/API.md`
 
 ## Verification
 
-- 100/100 backend tests passed
+- 105/105 backend tests passed (includes the dev-only funding endpoint)
 - Real Playwright/Chromium browser testing passed
-- All 8 API endpoints tested through the live deployment
+- All API endpoints (8 normal + the dev-only funding endpoint) tested through the live deployment
 - Ed25519 signing passed
 - PoW mining passed
 - Balances passed

@@ -20,9 +20,17 @@ Docker deployment with real browser automation (see `docs/TESTING.md`).
    generated wallet has a balance of `0` and cannot submit its first transaction. Do
    this *before* presenting, not live:
    - Generate a wallet through the UI (see step 4 below) and copy its address.
-   - Fund it using the development-only mechanism documented in the README/§18 and
-     `docs/TESTING.md` (a direct backend-side block insertion - there's no faucet
-     endpoint, and none should be added).
+   - The dev-only funding endpoint is already enabled in `docker-compose.yml`
+     (`DEV_FUNDING_ENABLED: "true"`), so just:
+     ```bash
+     curl -X POST http://localhost:3000/api/dev/fund \
+       -H "content-type: application/json" \
+       -d '{"address": "<the address you copied>", "amount": 100}'
+     ```
+     This is a real, documented, off-by-default-outside-this-compose-file endpoint
+     (see `docs/API.md`) - not something to explain away live; it's fine to mention
+     it exists specifically
+     because there's no coinbase mechanism.
    - Reload the page; the same wallet won't persist across a reload (it's
      regenerated), so either keep that browser tab open until the demo, or fund the
      *next* wallet you generate right before presenting.

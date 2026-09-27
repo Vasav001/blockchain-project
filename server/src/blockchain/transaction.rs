@@ -51,11 +51,12 @@ impl Transaction {
     /// `wallet`, deriving `sender`/`sender_public_key` from the wallet
     /// itself.
     ///
-    /// The server never signs on a caller's behalf - a real client signs
-    /// locally with its own wallet and submits the already-signed result to
-    /// `POST /api/transactions`. This exists for tests, and any future
-    /// in-process signing (e.g. a CLI), where a `Wallet` is at hand.
-    #[allow(dead_code)]
+    /// The server never signs on a caller's behalf for a *real* user's
+    /// transaction - a real client signs locally with its own wallet and
+    /// submits the already-signed result to `POST /api/transactions`. The
+    /// one exception is the dev-only funding endpoint
+    /// (`api::dev::fund`), which uses this with a throwaway keypair it
+    /// just generated. Also used by tests.
     pub fn signed_by(wallet: &Wallet, recipient: String, amount: i64) -> Self {
         let sender = wallet.address();
         let sender_public_key = wallet.public_key_hex();

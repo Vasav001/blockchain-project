@@ -460,3 +460,122 @@ async fn wallet_balance_reflects_confirmed_funding() {
     assert_eq!(json["address"], wallet.address());
     assert_eq!(json["balance"], 42);
 }
+
+// `DEV_FUNDING_ENABLED` is a process-wide environment variable, and Rust
+// runs tests in parallel within one process by default - so every test
+// below that touches it holds this lock for its duration, to avoid racing
+// another such test (no other test in this crate reads or sets this
+// variable, so this is the only contention point).
+fn dev_funding_env_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+#[tokio::test]
+async fn dev_fund_endpoint_is_absent_when_disabled() {
+    let _guard = dev_funding_env_lock().lock().unwrap_or_else(|e| e.into_inner());
+    unsafe { std::env::remove_var("DEV_FUNDING_ENABLED") };
+
+    let app = test_app_with_two_blocks().await;
+    // Axum's own unmatched-route 404 has an empty body (unlike our
+    // AppError 404s, which are JSON) - checked directly here rather than
+    // through the shared `post()` helper, which always expects JSON.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/dev/fund")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "address": "alice", "amount": 100 }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn dev_fund_endpoint_funds_a_wallet_when_enabled() {
+    let _guard = dev_funding_env_lock().lock().unwrap_or_else(|e| e.into_inner());
+    unsafe { std::env::set_var("DEV_FUNDING_ENABLED", "true") };
+
+    let app = test_app_with_two_blocks().await;
+    let (status, json) = post(
+        app.clone(),
+        "/api/dev/fund",
+        serde_json::json!({ "address": "alice", "amount": 100 }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["transactions"][0]["recipient"], "alice");
+    assert_eq!(json["transactions"][0]["amount"], 100);
+    let hash = json["hash"].as_str().unwrap();
+    assert!(hash.starts_with(&"0".repeat(MINING_DIFFICULTY)));
+
+    let (_, balance) = get(app, "/api/wallets/alice/balance").await;
+    assert_eq!(balance["balance"], 100);
+
+    unsafe { std::env::remove_var("DEV_FUNDING_ENABLED") };
+}
+
+#[tokio::test]
+async fn dev_fund_endpoint_rejects_non_positive_amount() {
+    let _guard = dev_funding_env_lock().lock().unwrap_or_else(|e| e.into_inner());
+    unsafe { std::env::set_var("DEV_FUNDING_ENABLED", "true") };
+
+    let app = test_app_with_two_blocks().await;
+    let (status, json) = post(
+        app,
+        "/api/dev/fund",
+        serde_json::json!({ "address": "alice", "amount": 0 }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(json["error"].as_str().unwrap().contains("amount"));
+
+    unsafe { std::env::remove_var("DEV_FUNDING_ENABLED") };
+}
+
+#[tokio::test]
+async fn dev_fund_endpoint_rejects_empty_address() {
+    let _guard = dev_funding_env_lock().lock().unwrap_or_else(|e| e.into_inner());
+    unsafe { std::env::set_var("DEV_FUNDING_ENABLED", "true") };
+
+    let app = test_app_with_two_blocks().await;
+    let (status, json) = post(
+        app,
+        "/api/dev/fund",
+        serde_json::json!({ "address": "", "amount": 10 }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(json["error"].is_string());
+
+    unsafe { std::env::remove_var("DEV_FUNDING_ENABLED") };
+}
+
+#[tokio::test]
+async fn dev_fund_endpoint_keeps_chain_valid() {
+    let _guard = dev_funding_env_lock().lock().unwrap_or_else(|e| e.into_inner());
+    unsafe { std::env::set_var("DEV_FUNDING_ENABLED", "true") };
+
+    let app = test_app_with_two_blocks().await;
+    let (fund_status, _) = post(
+        app.clone(),
+        "/api/dev/fund",
+        serde_json::json!({ "address": "alice", "amount": 50 }),
+    )
+    .await;
+    assert_eq!(fund_status, StatusCode::OK);
+
+    let (_, validity) = get(app, "/api/chain/valid").await;
+    assert_eq!(validity["valid"], true);
+
+    unsafe { std::env::remove_var("DEV_FUNDING_ENABLED") };
+}

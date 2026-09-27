@@ -16,10 +16,12 @@ pub struct Wallet {
 impl Wallet {
     /// Generates a new random keypair.
     ///
-    /// Not called from `main` - the server never creates a wallet on
-    /// anyone's behalf (see the module doc comment above). Used by tests,
-    /// and by `Transaction::signed_by`, which is itself only used by tests.
-    #[allow(dead_code)]
+    /// The server still never creates a wallet *for a user* (see the
+    /// module doc comment above) - the one exception is the dev-only
+    /// funding endpoint (`api::dev::fund`, gated behind
+    /// `DEV_FUNDING_ENABLED`), which generates a throwaway keypair purely
+    /// to have something to sign a funding transaction with. Also used by
+    /// tests, and by `Transaction::signed_by`.
     pub fn generate() -> Self {
         Wallet {
             signing_key: SigningKey::generate(&mut OsRng),

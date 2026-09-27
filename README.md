@@ -34,10 +34,10 @@ mining rewards/coinbase transactions, difficulty adjustment, authentication, Web
                      ┌─────────────────────────┐
    Browser  ───────► │  nginx (frontend)       │
    (signs            │  - serves static React  │
-   transactions       │  - reverse-proxies      │──────►  Rust backend (Axum)
-   client-side)       │    /api/* to backend    │         - REST API
+   transactions      │  - reverse-proxies      │──────►  Rust backend (Axum)
+   client-side)      │    /api/* to backend    │         - REST API
                      └─────────────────────────┘         - blockchain domain logic
-                                                           - SQLite persistence
+                                                         - SQLite persistence
 ```
 
 The backend is layered:
@@ -133,6 +133,20 @@ docker compose down            # stop and remove containers - data survives
 docker compose down -v         # stop and remove containers AND the data volume
 ```
 
+The dev-only funding endpoint (`POST /api/dev/fund` - see §11) is already enabled in
+`docker-compose.yml` (`DEV_FUNDING_ENABLED: "true"` on the `backend` service) - remove
+that line for a deployment where it shouldn't be available. For local (non-Docker)
+development:
+```bash
+DEV_FUNDING_ENABLED=true cargo run    # from server/
+```
+Example request:
+```bash
+curl -X POST http://localhost:3000/api/dev/fund \
+  -H "content-type: application/json" \
+  -d '{"address": "<wallet-address>", "amount": 100}'
+```
+
 ## 9. Frontend URL
 
 **http://localhost:3000**
@@ -157,6 +171,7 @@ does publish directly: `http://127.0.0.1:8080/health`.
 | GET | `/api/transactions/pending` | Every transaction currently in the mempool |
 | POST | `/api/mine` | Mine all pending transactions into a new block; `400` if the mempool is empty |
 | GET | `/api/wallets/{address}/balance` | `{"address": ..., "balance": ...}`, confirmed balance only |
+| POST | `/api/dev/fund` | **Dev/demo only**, requires `DEV_FUNDING_ENABLED=true` or `404`. Mines a real starting balance to an address. See `docs/API.md`. |
 
 ## 12. Blockchain flow
 
@@ -261,12 +276,13 @@ automated-tested vs. manually/browser-verified.
   credit the miner anything.
 - **No genesis allocation.** Combined with the above, no wallet ever has a starting
   balance through normal use - a freshly generated wallet cannot submit its first
-  transaction, because it has nothing to spend. The project's own tests and any local
-  "give a wallet a starting balance" step work around this the same way: inserting a
-  mined block directly through the backend's repository layer
-  (`db::insert_block`, which does no validation), bypassing the mempool's balance
-  check. This is a development/test-only mechanism, not a feature, and not something
-  reachable through the public API - there is no faucet endpoint.
+  transaction, because it has nothing to spend. For local testing/demos, an optional
+  **development-only** endpoint, `POST /api/dev/fund`, mints a starting balance by
+  mining a real funding block (see §11's API table and `docs/API.md`). It is not part
+  of the normal application surface: it only exists when the server is started with
+  `DEV_FUNDING_ENABLED=true`, and is otherwise not registered at all (a plain `404`,
+  same as any unknown path) - a normal deployment never has it. It is not a faucet in
+  the "public tap" sense; it's a demo/testing convenience, off by default.
 - **No difficulty adjustment.** `MINING_DIFFICULTY` is a fixed constant.
 - **No authentication, no WebSockets.** The API is unauthenticated (anyone who can
   reach it can submit transactions or trigger mining), and all data transfer is

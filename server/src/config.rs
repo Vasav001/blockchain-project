@@ -5,6 +5,15 @@
 /// development hardware. No dynamic difficulty adjustment yet.
 pub const MINING_DIFFICULTY: usize = 4;
 
+/// Reads `DEV_FUNDING_ENABLED` - `true` only if it's set to exactly `"true"`.
+/// Gates `POST /api/dev/fund` (see `api/dev.rs`): a development/demo-only
+/// endpoint that mints a wallet's starting balance, since this project has
+/// no coinbase/reward mechanism and therefore no other way to bootstrap
+/// one. Off by default, so a normal deployment never exposes it.
+pub fn dev_funding_enabled() -> bool {
+    std::env::var("DEV_FUNDING_ENABLED").as_deref() == Ok("true")
+}
+
 /// Reads `HOST` if set, otherwise `127.0.0.1` - a safe default for local
 /// development (not reachable from outside the machine). Docker Compose
 /// sets this to `0.0.0.0` so the container's published port is actually

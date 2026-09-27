@@ -9,6 +9,13 @@ services:
       # survives `docker compose down`/`up` (a fresh container, but not a
       # fresh volume, on every recreation).
       DATABASE_URL: sqlite:///app/data/blockchain.db
+      # Enables POST /api/dev/fund (mints a starting balance for a wallet -
+      # see docs/API.md). There's no coinbase/reward mechanism, so this is
+      # the documented way to bootstrap a wallet for local demos/testing.
+      # Off in a real deployment: just delete this line, and the route
+      # stops being registered entirely (a plain 404, not a "disabled"
+      # response).
+      DEV_FUNDING_ENABLED: "true"
     volumes:
       - blockchain-data:/app/data
     healthcheck:

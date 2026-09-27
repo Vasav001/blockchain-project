@@ -1,3 +1,4 @@
+mod dev;
 mod handlers;
 #[cfg(test)]
 mod tests;
@@ -61,7 +62,7 @@ impl AppState {
 /// The blockchain API routes. `main.rs` merges this with the unrelated
 /// `/health` route.
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/api/blocks", get(handlers::list_blocks))
         .route("/api/blocks/{index}", get(handlers::get_block))
         .route("/api/chain/valid", get(handlers::chain_valid))
@@ -74,6 +75,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/wallets/{address}/balance",
             get(handlers::wallet_balance),
-        )
-        .with_state(state)
+        );
+
+    // Only registered - not just guarded inside the handler - when enabled,
+    // so a normal deployment has no route at all for this path (a plain
+    // 404, indistinguishable from any other unknown path).
+    if crate::config::dev_funding_enabled() {
+        router = router.route("/api/dev/fund", post(dev::fund));
+    }
+
+    router.with_state(state)
 }

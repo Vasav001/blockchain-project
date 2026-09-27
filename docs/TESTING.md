@@ -9,7 +9,7 @@ project, and how. All of the below reflects real runs, not aspirational coverage
 cd server && cargo test
 ```
 
-**100 tests**, all passing. In-process (no external processes spawned), each test using
+**105 tests**, all passing. In-process (no external processes spawned), each test using
 an isolated in-memory SQLite database. Covers: block hashing and genesis determinism,
 chain validation and tamper detection, Proof-of-Work (nonce search, difficulty
 satisfaction, PoW validation), transaction signing/verification and all tamper variants
@@ -107,17 +107,21 @@ assets (JS/CSS) are served with correct content types; unknown routes fall back 
 ## 6. Development-only funding mechanism
 
 There is no coinbase/reward mechanism and no genesis allocation, so no wallet can ever
-acquire its first balance through the public API - this is a deliberate scope decision,
-not a bug (see the README's "Known limitations"). To set up a funded wallet for manual
-testing/demo purposes, a block crediting the target address is inserted directly
-through the backend's repository layer (`db::insert_block`, which performs no
-validation by design - see its own doc comment), bypassing the mempool's balance check
-entirely. In this sandbox that meant briefly stopping the running backend container,
-running that insertion via a throwaway container built from the same Dockerfile's
-builder stage against the same data volume, then restarting the real backend - avoiding
-two processes writing to the SQLite file at once. This mechanism is not exposed through
-any API endpoint and is not part of the application; it exists only to make manual
-verification and demos possible without an economic bootstrapping problem.
+acquire its first balance through ordinary use - this is a deliberate scope decision,
+not a bug (see the README's "Known limitations"). `POST /api/dev/fund` (only present
+when the server is started with `DEV_FUNDING_ENABLED=true`; otherwise not registered
+at all, a plain `404`) mines a real, valid funding block to a given address, reusing
+the same signing/validation/mining/persistence code the normal transaction and mining
+paths use - see `docs/API.md` and `server/src/api/dev.rs`. It's covered by dedicated
+`cargo test` cases (funding succeeds and updates balance, the route is absent when the
+flag is off, invalid address/amount are rejected, the chain stays valid afterward).
+
+Historical note: earlier in this project's development, before this endpoint existed,
+the same effect was achieved by hand-compiling a temporary `#[cfg(test)]` snippet
+directly into `db::insert_block`'s call path and running it via `cargo test` against
+the live database (in Docker, via a throwaway container from the builder stage against
+the same volume, briefly stopping/restarting the real backend to avoid two writers).
+That approach is superseded by the endpoint above and is no longer necessary.
 
 ## 7. Persistence verification
 

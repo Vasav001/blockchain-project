@@ -103,6 +103,31 @@ pending-but-unmined transaction never affects this.
 Any string is accepted as `address`; one that has never appeared in a confirmed
 transaction simply returns `"balance": 0` (never a `404`).
 
+## `POST /api/dev/fund` (development/demo only)
+
+**Not part of the normal application.** Only exists when the server is started with
+`DEV_FUNDING_ENABLED=true` - otherwise this route isn't registered at all, so a request
+to it gets a plain `404` (identical to any other unknown path, not a special "disabled"
+response). Exists because there's no coinbase/reward mechanism, so no wallet can
+otherwise ever acquire a starting balance (see the README's "Known limitations").
+
+Mints `amount` to `address` from a one-off keypair generated on the spot, using the
+same building blocks as the real transaction/mining paths: `Transaction::signed_by`
+(real signature, real structural validation via `Transaction::validation_error` - the
+same checks `POST /api/transactions` runs), `Block::mine` (the resulting block
+satisfies the same Proof-of-Work every other block does), and `db::insert_block` (the
+same atomic block+transactions persistence `POST /api/mine` uses).
+
+**Request body:**
+```json
+{ "address": "<address>", "amount": 100 }
+```
+
+**Response:** `200 OK` with the newly mined funding block (same shape as a
+`GET /api/blocks` entry). `400` with `{"error": "invalid transaction: <reason>"}` for a
+non-positive amount or empty address (the same structural rules as
+`POST /api/transactions`). `404` if the endpoint isn't enabled at all.
+
 ## Concurrency notes
 
 `POST /api/transactions` and `POST /api/mine` are each internally serialized against
