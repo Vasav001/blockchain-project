@@ -8,9 +8,11 @@ use crate::wallet::{self, Wallet};
 /// transaction's economic fields.
 ///
 /// `sender_public_key` and `signature` are both hex-encoded - the same
-/// convention `Block`/`Transaction` already use for `hash`/`id`. No wallet
-/// balances yet - that needs wallet *state* (a later phase), separate from
-/// wallet *keys* (this phase).
+/// convention `Block`/`Transaction` already use for `hash`/`id`. Balance
+/// checking (does `sender` actually have `amount` to spend) is not this
+/// type's concern - see `Mempool::try_add_transaction` and
+/// `Chain::balance_of`, which apply it at admission time using this type's
+/// fields.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Transaction {
     pub sender: String,

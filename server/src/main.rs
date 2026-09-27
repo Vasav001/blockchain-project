@@ -32,9 +32,10 @@ async fn main() {
 
     let app = build_app(api::AppState::new(pool));
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:8080")
+    let bind_address = format!("{}:{}", config::host(), config::port());
+    let listener = tokio::net::TcpListener::bind(&bind_address)
         .await
-        .expect("failed to bind to 127.0.0.1:8080");
+        .unwrap_or_else(|err| panic!("failed to bind to {bind_address}: {err}"));
 
     tracing::info!("listening on {}", listener.local_addr().unwrap());
     axum::serve(listener, app).await.expect("server error");

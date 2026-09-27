@@ -52,9 +52,9 @@ function App() {
     }
   }, [])
 
-  // One-time load on mount - no polling, per this phase's scope. Everything
-  // after this refreshes only in response to an explicit user action
-  // (Refresh buttons) or a successful mutation (submit/mine).
+  // One-time load on mount - deliberately no polling. Everything after
+  // this refreshes only in response to an explicit user action (Refresh
+  // buttons) or a successful mutation (submit/mine).
   useEffect(() => {
     void refreshChain()
     void refreshPending()

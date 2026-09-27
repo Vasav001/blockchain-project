@@ -106,9 +106,10 @@ mod tests {
     }
 
     /// A chain where `test_wallet()` has a confirmed balance of `amount`,
-    /// credited by a throwaway "faucet" wallet. There's no coinbase/reward
-    /// mechanism in this phase (explicitly out of scope), so this is the
-    /// only way to give a test wallet spendable balance: mine a block
+    /// credited by a throwaway "faucet" wallet. This project has no
+    /// coinbase/reward mechanism (a deliberate scope decision - see the
+    /// README), so this is the only way to give a test wallet spendable
+    /// balance: mine a block
     /// directly, bypassing the mempool's own balance check entirely (the
     /// same way `insert_block` never validates - see its doc comment).
     fn funded_chain(amount: i64) -> Chain {

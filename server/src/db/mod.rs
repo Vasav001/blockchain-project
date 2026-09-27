@@ -43,9 +43,34 @@ pub fn database_url() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://data/blockchain.db".to_string())
 }
 
+/// Creates the parent directory of a `sqlite://...` URL's file path, if
+/// it doesn't already exist. A no-op for the special `sqlite::memory:`
+/// URL (used by tests), which has no file path to create anything for.
+fn ensure_parent_directory_exists(database_url: &str) {
+    let Some(path) = database_url.strip_prefix("sqlite://") else {
+        return;
+    };
+
+    let parent = std::path::Path::new(path).parent();
+    if let Some(parent) = parent {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+}
+
 /// Opens (creating the file if needed) the SQLite database at `database_url`
 /// and applies any migrations that haven't run yet.
 pub async fn init_pool(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
+    // `create_if_missing` below only creates the database *file* - it
+    // doesn't create missing parent directories, so a freshly-created
+    // Docker volume (empty, but present) works, while a genuinely
+    // nonexistent directory would otherwise fail with a confusing
+    // "unable to open database file" error. Best-effort: if this can't
+    // create the directory, the connection attempt just below will
+    // surface that as a clear error anyway.
+    ensure_parent_directory_exists(database_url);
+
     // SQLite ignores foreign key constraints unless a connection turns them
     // on explicitly - without this, `block_transactions.block_index`
     // referencing `blocks` would be declarative only, never enforced.
@@ -126,6 +151,18 @@ pub(crate) async fn test_pool() -> SqlitePool {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn init_pool_creates_missing_parent_directories() {
+        let dir = std::env::temp_dir().join(format!("blockchain-project-test-{}", std::process::id()));
+        let db_path = dir.join("nested").join("blockchain.db");
+        let url = format!("sqlite://{}", db_path.display());
+
+        let pool = init_pool(&url).await.unwrap();
+        assert!(db_path.exists());
+
+        pool.close().await;
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[tokio::test]
     async fn migrations_apply_cleanly_to_a_fresh_database() {
@@ -140,11 +177,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migrations_upgrade_an_existing_pre_phase_7_database() {
-        // Simulate a database left behind by the Phase 6 version of this
-        // app: only migrations 1-2 applied, so `block_transactions` has no
-        // `sender_public_key`/`signature` columns yet, and it already holds
-        // a row written before those columns existed.
+    async fn migrations_upgrade_a_database_missing_the_signature_columns() {
+        // Simulate an older database with only migrations 1-2 applied:
+        // `block_transactions` has no `sender_public_key`/`signature`
+        // columns yet, and it already holds a row written before those
+        // columns existed.
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -214,22 +251,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migrations_upgrade_an_existing_phase_7_database() {
-        // Simulate a database left behind by the Phase 7 version of this
-        // app: migrations 1-4 applied (full transaction/signature schema),
-        // but no `nonce` column on `blocks` yet, and it already holds a
-        // genesis row written before that column existed.
+    async fn migrations_upgrade_a_database_missing_the_nonce_column() {
+        // Simulate an older database with migrations 1-4 applied (full
+        // transaction/signature schema), but no `nonce` column on
+        // `blocks` yet, and it already holds a genesis row written before
+        // that column existed.
         //
-        // Decision (Phase 8): old, non-mined blocks are simply read back
+        // Design decision: old, non-mined blocks are simply read back
         // with `nonce = 0` via this column's `DEFAULT 0` - the same
-        // approach already used for `sender_public_key`/`signature` in
-        // Phase 7. This does *not* retroactively make an old block's
-        // stored hash "correct" under the new nonce-including hash
-        // formula (see `Block::calculate_hash`); in practice the only
-        // block ever persisted before mining existed is genesis, and a
-        // fresh `data/blockchain.db` (gitignored, disposable dev state)
-        // is the practical remedy if `/api/chain/valid` ever reports an
-        // old database as invalid after this upgrade.
+        // approach already used for `sender_public_key`/`signature`
+        // above. This does *not* retroactively make an old block's stored
+        // hash "correct" under the nonce-including hash formula (see
+        // `Block::calculate_hash`); in practice the only block ever
+        // persisted before mining existed is genesis, and a fresh
+        // `data/blockchain.db` (gitignored, disposable dev state) is the
+        // practical remedy if `/api/chain/valid` ever reports an old
+        // database as invalid after this upgrade.
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")

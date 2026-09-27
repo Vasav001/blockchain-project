@@ -1,0 +1,37 @@
+services:
+  backend:
+    build:
+      context: ./server
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8080"
+      # Absolute path under the mounted volume below, so the database
+      # survives `docker compose down`/`up` (a fresh container, but not a
+      # fresh volume, on every recreation).
+      DATABASE_URL: sqlite:///app/data/blockchain.db
+    volumes:
+      - blockchain-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    # Not published to the host - only the frontend's nginx reverse proxy
+    # needs to reach this, over the Compose network.
+    expose:
+      - "8080"
+
+  frontend:
+    build:
+      context: ./client
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3000:80"
+
+volumes:
+  # Named volume, not a bind mount: portable across host OSes (no
+  # developer-specific absolute path), and owned/managed by Docker.
+  blockchain-data:

@@ -10,9 +10,13 @@ pub struct Chain {
 impl Chain {
     /// Starts a new chain containing only the genesis block.
     ///
-    /// Not yet called from `main` - the running app currently only reads
-    /// chains back via `from_blocks`. This will be used once mining starts
-    /// minting chains from scratch, in a later phase.
+    /// Not called from `main`: the running app always loads its chain from
+    /// storage via `from_blocks`, including at startup (genesis is seeded
+    /// straight into SQLite, not built in memory via this). Mining
+    /// (`Block::mine`) also doesn't need a full `Chain` - it works
+    /// directly from the latest persisted block. This stays around
+    /// because tests that build a chain from scratch in memory are
+    /// simpler starting here than replicating the DB-backed startup path.
     #[allow(dead_code)]
     pub fn new() -> Self {
         Chain {
@@ -61,6 +65,17 @@ impl Chain {
     /// must be exactly the expected genesis block, and every block after
     /// genesis must satisfy the configured mining difficulty (genesis is
     /// exempt - it's a fixed, deterministic special case, never mined).
+    ///
+    /// This deliberately does *not* re-verify each transaction's signature
+    /// or re-run `Transaction::is_valid()` - confirmed chain integrity
+    /// (hashes, links, PoW) and per-transaction validity are different
+    /// concerns, and the latter is already enforced once, at admission
+    /// time, by `Mempool::try_add_transaction`. A block's hash does cover
+    /// each transaction's `id` (see `Block::calculate_hash`), so a
+    /// transaction can't be silently swapped for a different one without
+    /// changing the block hash - but a transaction *tampered with in
+    /// place* (its fields changed without updating `id`/`signature`) would
+    /// only be caught by calling `Transaction::is_valid()` on it directly.
     pub fn is_valid(&self) -> bool {
         for (i, block) in self.blocks.iter().enumerate() {
             if !block.hash_matches() {
@@ -92,17 +107,17 @@ impl Chain {
     /// `amount` and increases the recipient's by `amount`. A wallet that's
     /// never appeared in a confirmed transaction has balance `0`.
     ///
-    /// There's no mining reward and no genesis allocation in this phase
-    /// (explicitly out of scope - see the project's phase history), so
-    /// every wallet starts at zero and can only ever have what it's
-    /// received. This is a pure replay with no validation of its own: it
-    /// doesn't re-check signatures or re-enforce "sender must have had
-    /// enough balance at the time" - that's `Mempool::try_add_transaction`'s
-    /// job, applied once, when a transaction is first admitted. Balance
-    /// isn't part of `is_valid()` either, by the same reasoning `Chain`
-    /// already applies to transaction signatures (see `is_valid`'s doc
-    /// comment in earlier phases): confirmed chain integrity (hashes,
-    /// links, PoW) and economic admission policy are different concerns.
+    /// This project has no mining reward and no genesis allocation (a
+    /// deliberate scope decision - see the README), so every wallet
+    /// starts at zero and can only ever have what it's received. This is
+    /// a pure replay with no validation of its own: it doesn't re-check
+    /// signatures or re-enforce "sender must have had enough balance at
+    /// the time" - that's `Mempool::try_add_transaction`'s job, applied
+    /// once, when a transaction is first admitted. Balance isn't part of
+    /// `is_valid()` either, by the same reasoning documented on `is_valid`
+    /// above for transaction signatures: confirmed chain integrity
+    /// (hashes, links, PoW) and economic admission policy are different
+    /// concerns.
     pub fn balance_of(&self, address: &str) -> i64 {
         let mut balance: i64 = 0;
 
