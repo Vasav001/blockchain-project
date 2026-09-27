@@ -1,0 +1,15 @@
+# Rust
+/server/target/
+/target/
+
+# SQLite data
+/server/data/*.db
+/server/data/*.db-*
+
+# Node / Vite
+/client/node_modules/
+/client/dist/
+
+# Editor / OS
+.DS_Store
+*.swp
