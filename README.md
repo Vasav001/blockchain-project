@@ -44,6 +44,9 @@ The database location can be overridden with the `DATABASE_URL` environment vari
 
 ## Status
 
-Project scaffolding only — no blockchain logic implemented yet. See the implementation
-plan for the phased build-out (genesis block → chain validation → persistence → REST API
-→ transactions → wallets/signatures → proof-of-work → balances → explorer UI).
+Implemented so far: genesis block + SHA-256 hashing, chain validation/tamper detection,
+SQLite persistence, a read-only REST API, transactions with an in-memory mempool, and
+Ed25519 wallets/signatures (transactions are signed client-side and verified server-side;
+the server never generates, stores, or returns a private key).
+
+Not yet implemented: wallet balances, Proof-of-Work/mining, P2P, and the explorer UI.
